@@ -1,0 +1,144 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sql-local</title>
+<style>
+  :root{--bg:#fafaf8;--fg:#1f1f1f;--muted:#777;--line:#ddd;--acc:#2f6fed}
+  body{font:15px/1.6 -apple-system,"Pretendard","Apple SD Gothic Neo",system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:0}
+  .wrap{display:grid;grid-template-columns:280px 1fr;min-height:100vh}
+  aside{border-right:1px solid var(--line);padding:14px;background:#fff;font-size:13px;overflow:auto}
+  main{padding:18px 22px;max-width:1100px}
+  h1{font-size:19px;margin:0 0 4px}h1 small{font-weight:400;color:var(--muted);font-size:13px}
+  textarea,input,select,button{font:inherit}
+  textarea{width:100%;height:70px;padding:10px;border:1px solid var(--line);border-radius:6px;box-sizing:border-box;resize:vertical}
+  .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0}
+  select,button{padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:#fff}
+  button.primary{background:var(--acc);color:#fff;border-color:var(--acc);padding:6px 22px;cursor:pointer}button:disabled{opacity:.5}
+  #status,#stages{color:var(--muted);font-size:13px;min-height:1.3em}
+  table{border-collapse:collapse;font-size:13px;width:100%;background:#fff}th,td{border:1px solid var(--line);padding:4px 8px;text-align:left;white-space:nowrap}
+  th{cursor:pointer;background:#f3f3f0;position:sticky;top:0}td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .tbl{max-height:420px;overflow:auto;border:1px solid var(--line);border-radius:6px}
+  #chart svg{width:100%;max-width:760px;height:auto;background:#fff;border:1px solid var(--line);border-radius:6px}
+  pre,.sql{white-space:pre-wrap;background:#f1f1ee;padding:10px;border-radius:6px;font-size:13px;font-family:ui-monospace,Menlo,monospace}
+  textarea.sql{height:90px;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+  .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:600}.ok{background:#dff5e1;color:#1a6b2a}.warn{background:#fff2cc;color:#8a6100}.bad{background:#fde2e2;color:#a33}
+  aside h3{font-size:13px;margin:12px 0 4px}aside .t{margin:6px 0}aside .t b{display:block}aside input{width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:4px;padding:2px 5px;font-size:12px;margin:1px 0}
+  aside .c{display:flex;gap:4px;align-items:center;color:#555}aside .c span{flex:0 0 90px;overflow:hidden;text-overflow:ellipsis}
+  #runs li{list-style:none;cursor:pointer;padding:2px 0}#runs li:hover{color:var(--acc)}#runs{padding:0;margin:0}
+  details{margin-top:12px}summary{cursor:pointer;color:var(--muted);font-size:13px}
+  @media(max-width:800px){.wrap{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid var(--line)}}
+</style>
+<div class="wrap">
+<aside>
+  <h3>스키마 <small id="dbname"></small></h3>
+  <div id="schema"></div>
+  <button id="saveNotes" style="margin-top:8px;width:100%">설명 저장 (프롬프트에 반영)</button>
+  <details open><summary>이전 질문</summary><ul id="runs"></ul></details>
+</aside>
+<main>
+  <h1>sql-local <small>— 자연어 → SQL → 표·차트 (로컬 LLM)</small></h1>
+  <div id="stages"></div>
+  <textarea id="q" placeholder="예: 부서별 과제 예산 합계를 큰 순서로 / 2024년 월별 집행액 추이 / 논문이 가장 많은 과제 5개"></textarea>
+  <div class="bar">
+    <label>모델 <select id="model"></select></label>
+    <label><input type="checkbox" id="ctx" checked> 이전 질문 맥락 유지</label>
+    <button id="go" class="primary">질문</button>
+    <span id="status"></span>
+  </div>
+  <div id="res" hidden>
+    <div id="meta" style="margin:8px 0"></div>
+    <div id="expl" style="margin:6px 0;color:#444"></div>
+    <details><summary>SQL 보기 / 수정 후 재실행</summary>
+      <textarea id="sql" class="sql"></textarea>
+      <div class="bar"><label>차트 <select id="ctype"><option>table<option>bar<option>line<option>pie</select></label>
+        <label>x <select id="cx"></select></label><label>y <select id="cy"></select></label>
+        <button id="rerun">재실행</button><a id="csv" href="#">CSV 내려받기</a></div>
+    </details>
+    <div id="chart" style="margin:10px 0"></div>
+    <div class="tbl"><table id="tbl"></table></div>
+  </div>
+</main>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const MODEL_DEFAULT = %MODEL%;
+let history = [], cur = null, notes = {};
+fetch('/api/models').then(r => r.json()).then(ms => { $('model').innerHTML = ms.map(m => `<option ${m === MODEL_DEFAULT ? 'selected' : ''}>${m}</option>`).join(''); })
+  .catch(() => $('status').textContent = 'LLM 서버에 연결할 수 없습니다');
+
+async function loadSchema() {
+  const s = await fetch('/api/schema').then(r => r.json());
+  if (s.error) { $('schema').textContent = s.error; return; }
+  notes = s.notes || {};
+  $('dbname').textContent = s.kind + ' · ' + s.db.split('/').pop();
+  $('schema').innerHTML = s.tables.map(t => `<div class="t"><b>${t.name}</b><input data-t="${t.name}" data-c="_" placeholder="테이블 설명" value="${(notes[t.name] || {})._ || ''}">` +
+    t.cols.map(([c, ty]) => `<div class="c"><span title="${c} ${ty}">${c}</span><input data-t="${t.name}" data-c="${c}" placeholder="${ty}" value="${(notes[t.name] || {})[c] || ''}"></div>`).join('') +
+    (t.fks.length ? `<div style="color:#999">FK ${t.fks.join(', ')}</div>` : '') + `</div>`).join('');
+}
+$('saveNotes').onclick = async () => {
+  const n = {};
+  $('schema').querySelectorAll('input').forEach(i => { if (i.value.trim()) (n[i.dataset.t] = n[i.dataset.t] || {})[i.dataset.c] = i.value.trim(); });
+  await fetch('/api/notes', { method: 'POST', body: JSON.stringify(n) }); notes = n; $('status').textContent = '스키마 설명 저장됨';
+};
+async function loadRuns() {
+  const rs = await fetch('/api/runs').then(r => r.json());
+  $('runs').innerHTML = rs.map(r => `<li data-id="${r.run_id}">${r.error ? '✘' : '✔'} ${r.question.slice(0, 34)} <small>(${r.n}행)</small></li>`).join('') || '<li>없음</li>';
+  $('runs').querySelectorAll('li[data-id]').forEach(li => li.onclick = async () => { const j = await fetch('/api/runs/' + li.dataset.id).then(r => r.json()); $('q').value = j.question; show(j); });
+}
+loadSchema(); loadRuns();
+
+const isNum = v => v !== null && v !== '' && !isNaN(v);
+function table(cols, rows) {
+  let sortCol = -1, asc = true;
+  const render = () => {
+    const rs = sortCol < 0 ? rows : [...rows].sort((a, b) => { const x = a[sortCol], y = b[sortCol]; const r = isNum(x) && isNum(y) ? x - y : String(x).localeCompare(String(y)); return asc ? r : -r; });
+    $('tbl').innerHTML = '<tr>' + cols.map((c, i) => `<th data-i="${i}">${c}${i === sortCol ? (asc ? ' ▲' : ' ▼') : ''}</th>`).join('') + '</tr>' +
+      rs.map(r => '<tr>' + r.map(v => `<td class="${isNum(v) ? 'num' : ''}">${v === null ? '' : (isNum(v) && String(v).length > 4 ? Number(v).toLocaleString() : String(v))}</td>`).join('') + '</tr>').join('');
+    $('tbl').querySelectorAll('th').forEach(th => th.onclick = () => { const i = +th.dataset.i; asc = i === sortCol ? !asc : true; sortCol = i; render(); });
+  };
+  render();
+}
+function show(j) {
+  cur = j; $('res').hidden = false;
+  $('meta').innerHTML = `<span class="badge ${j.error ? 'bad' : 'ok'}">${j.error ? '실패' : j.rows.length + '행' + (j.truncated ? ' (500행 이상, 잘림)' : '')}</span> ${j.repaired ? '<span class="badge warn">오류 수정 재생성</span>' : ''} <small>${j.model || ''} · ${j.ts}</small>`;
+  $('expl').textContent = j.error || j.explanation || '';
+  $('sql').value = j.sql || '';
+  $('ctype').value = (j.chart && j.chart.type) || 'table';
+  const opt = c => j.columns.map(x => `<option ${x === c ? 'selected' : ''}>${x}</option>`).join('');
+  $('cx').innerHTML = opt(j.chart && j.chart.x); $('cy').innerHTML = opt(j.chart && j.chart.y);
+  $('chart').innerHTML = j.svg || '';
+  $('csv').href = '/api/runs/' + j.run_id + '.csv';
+  table(j.columns || [], j.rows || []);
+}
+$('rerun').onclick = async () => {
+  $('status').textContent = '재실행 중';
+  const j = await fetch('/api/rerun', { method: 'POST', body: JSON.stringify({ sql: $('sql').value, chart: { type: $('ctype').value, x: $('cx').value, y: $('cy').value } }) }).then(r => r.json());
+  if (j.error) { $('status').textContent = '오류: ' + j.error; return; }
+  show(j); loadRuns(); $('status').textContent = '';
+};
+$('go').onclick = async () => {
+  const question = $('q').value.trim(); if (!question) return;
+  $('go').disabled = true; $('stages').textContent = ''; $('status').textContent = '실행 중';
+  const t0 = Date.now();
+  try {
+    const r = await fetch('/api/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, model: $('model').value, history: $('ctx').checked ? history : [] }) });
+    const reader = r.body.getReader(), dec = new TextDecoder(); let buf = '';
+    while (true) {
+      const { value, done } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i; while ((i = buf.indexOf('\n\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 2);
+        if (!line.startsWith('data: ')) continue;
+        const ev = JSON.parse(line.slice(6));
+        if (ev.stage) $('stages').innerHTML += `<b>${ev.stage}</b> ${ev.msg} · `;
+        if (ev.error) throw new Error(ev.error);
+        if (ev.done) { show(ev.done); loadRuns(); if (ev.done.sql && !ev.done.error) history.push({ question, sql: ev.done.sql, head: ev.done.columns.join(',') + ' / ' + (ev.done.rows[0] || []).join(',') }); }
+      }
+    }
+    $('status').textContent = `완료 ${((Date.now() - t0) / 1000).toFixed(0)}초`;
+  } catch (e) { $('status').textContent = '오류: ' + e.message; }
+  $('go').disabled = false;
+};
+$('q').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) $('go').click(); });
+</script>
