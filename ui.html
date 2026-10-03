@@ -61,6 +61,7 @@
 </div>
 <script>
 const $ = id => document.getElementById(id);
+const esc = v => String(v).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const MODEL_DEFAULT = %MODEL%;
 let history = [], cur = null, notes = {};
 fetch('/api/models').then(r => r.json()).then(ms => { $('model').innerHTML = ms.map(m => `<option ${m === MODEL_DEFAULT ? 'selected' : ''}>${m}</option>`).join(''); })
@@ -71,8 +72,8 @@ async function loadSchema() {
   if (s.error) { $('schema').textContent = s.error; return; }
   notes = s.notes || {};
   $('dbname').textContent = s.kind + ' · ' + s.db.split('/').pop();
-  $('schema').innerHTML = s.tables.map(t => `<div class="t"><b>${t.name}</b><input data-t="${t.name}" data-c="_" placeholder="테이블 설명" value="${(notes[t.name] || {})._ || ''}">` +
-    t.cols.map(([c, ty]) => `<div class="c"><span title="${c} ${ty}">${c}</span><input data-t="${t.name}" data-c="${c}" placeholder="${ty}" value="${(notes[t.name] || {})[c] || ''}"></div>`).join('') +
+  $('schema').innerHTML = s.tables.map(t => `<div class="t"><b>${esc(t.name)}</b><input data-t="${esc(t.name)}" data-c="_" placeholder="테이블 설명" value="${esc((notes[t.name] || {})._ || '')}">` +
+    t.cols.map(([c, ty]) => `<div class="c"><span title="${esc(c)} ${esc(ty)}">${esc(c)}</span><input data-t="${esc(t.name)}" data-c="${esc(c)}" placeholder="${esc(ty)}" value="${esc((notes[t.name] || {})[c] || '')}"></div>`).join('') +
     (t.fks.length ? `<div style="color:#999">FK ${t.fks.join(', ')}</div>` : '') + `</div>`).join('');
 }
 $('saveNotes').onclick = async () => {
@@ -82,7 +83,7 @@ $('saveNotes').onclick = async () => {
 };
 async function loadRuns() {
   const rs = await fetch('/api/runs').then(r => r.json());
-  $('runs').innerHTML = rs.map(r => `<li data-id="${r.run_id}">${r.error ? '✘' : '✔'} ${r.question.slice(0, 34)} <small>(${r.n}행)</small></li>`).join('') || '<li>없음</li>';
+  $('runs').innerHTML = rs.map(r => `<li data-id="${r.run_id}">${r.error ? '✘' : '✔'} ${esc(r.question.slice(0, 34))} <small>(${r.n}행)</small></li>`).join('') || '<li>없음</li>';
   $('runs').querySelectorAll('li[data-id]').forEach(li => li.onclick = async () => { const j = await fetch('/api/runs/' + li.dataset.id).then(r => r.json()); $('q').value = j.question; show(j); });
 }
 loadSchema(); loadRuns();
@@ -92,8 +93,8 @@ function table(cols, rows) {
   let sortCol = -1, asc = true;
   const render = () => {
     const rs = sortCol < 0 ? rows : [...rows].sort((a, b) => { const x = a[sortCol], y = b[sortCol]; const r = isNum(x) && isNum(y) ? x - y : String(x).localeCompare(String(y)); return asc ? r : -r; });
-    $('tbl').innerHTML = '<tr>' + cols.map((c, i) => `<th data-i="${i}">${c}${i === sortCol ? (asc ? ' ▲' : ' ▼') : ''}</th>`).join('') + '</tr>' +
-      rs.map(r => '<tr>' + r.map(v => `<td class="${isNum(v) ? 'num' : ''}">${v === null ? '' : (isNum(v) && String(v).length > 4 ? Number(v).toLocaleString() : String(v))}</td>`).join('') + '</tr>').join('');
+    $('tbl').innerHTML = '<tr>' + cols.map((c, i) => `<th data-i="${i}">${esc(c)}${i === sortCol ? (asc ? ' ▲' : ' ▼') : ''}</th>`).join('') + '</tr>' +
+      rs.map(r => '<tr>' + r.map(v => `<td class="${isNum(v) ? 'num' : ''}">${v === null ? '' : (isNum(v) && String(v).length > 4 ? Number(v).toLocaleString() : esc(v))}</td>`).join('') + '</tr>').join('');
     $('tbl').querySelectorAll('th').forEach(th => th.onclick = () => { const i = +th.dataset.i; asc = i === sortCol ? !asc : true; sortCol = i; render(); });
   };
   render();
