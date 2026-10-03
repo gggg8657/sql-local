@@ -294,7 +294,7 @@ def chart_svg(kind, cols, rows, x, y):
 def _fmt(v):
     for unit, s in ((1e12, "조"), (1e8, "억"), (1e4, "만")):
         if abs(v) >= unit:
-            return f"{v / unit:g}{s}"
+            return f"{v / unit:.3g}{s}"
     return f"{v:g}"
 
 
