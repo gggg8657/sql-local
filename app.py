@@ -36,6 +36,7 @@ LLM_KEY = os.environ.get("LLM_API_KEY", "")
 PORT = int(os.environ.get("PORT", "8772"))
 NUM_CTX = int(os.environ.get("NUM_CTX", "16384"))
 DB_URL = os.environ.get("DB_URL", os.path.join(ROOT, "sample", "research.db"))
+DEMO = os.path.abspath(DB_URL) == os.path.join(ROOT, "sample", "research.db")  # seed.py 가 만든 가상 데이터 → 화면에 demoDB 표시
 MAX_ROWS = 500
 TIMEOUT_S = 10
 FORBID = re.compile(r"\b(insert|update|delete|drop|alter|create|replace|truncate|pragma|attach|detach|vacuum|grant|revoke|exec|execute|copy|into\s+outfile|load_file)\b", re.I)
@@ -416,8 +417,8 @@ def list_runs():
 HTML = read(os.path.join(ROOT, "ui.html")) if os.path.exists(os.path.join(ROOT, "ui.html")) else "ui.html 없음"
 
 # ── 저작권 표기 (LICENSE·NOTICE 참고) ─────────────────────────────────────
-_SIG = __import__("base64").b64decode("wqkgMjAyNiDquYDrj5nso7wgwrcgZG9uZ2p1a2ltLmRldkBnbWFpbC5jb20=").decode()
-_SIG_A = __import__("base64").b64decode("RG9uZ0p1IEtpbSA8ZG9uZ2p1a2ltLmRldkBnbWFpbC5jb20+").decode()
+_SIG = __import__("base64").b64decode("wqkgMjAyNiBnZ2dnODY1NyDCtyBkb25nanVraW0uZGV2QGdtYWlsLmNvbQ==").decode()
+_SIG_A = __import__("base64").b64decode("Z2dnZzg2NTcgPGRvbmdqdWtpbS5kZXZAZ21haWwuY29tPg==").decode()
 
 
 def signed(html):
@@ -457,7 +458,7 @@ class H(BaseHTTPRequestHandler):
             if self.path == "/api/models":
                 return self._send(models())
             if self.path == "/api/schema":
-                return self._send({"db": DB_URL, "kind": db().kind, "tables": [{"name": t["name"], "cols": t["cols"], "fks": t["fks"]} for t in db().tables()], "notes": load_notes()})
+                return self._send({"db": DB_URL, "demo": DEMO, "kind": db().kind, "tables": [{"name": t["name"], "cols": t["cols"], "fks": t["fks"]} for t in db().tables()], "notes": load_notes()})
             if self.path == "/api/runs":
                 return self._send(list_runs())
             m = re.fullmatch(r"/api/runs/([\w-]+)(\.csv)?", self.path)
