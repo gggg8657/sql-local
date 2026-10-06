@@ -41,7 +41,15 @@ python3 selftest.py                                               # LLM 없이 �
 
 - 이전 질문 3개의 SQL·결과 머리를 다음 질문에 넘겨 "그중 2024년만", "그 과제의 논문은?" 같은 후속 질문이 됩니다.
 - 왼쪽 스키마 패널에 열 설명(예: `IF` = 저널 영향력 지수)을 적고 저장하면 프롬프트에 들어가 정확도가 올라갑니다. `_workspace/schema_notes.json`.
-- 샘플 DB(`seed.py`): 연구과제 15 · 집행 1,512 · 인력 68 · 장비 19 · 논문 31 (가상 데이터).
+- **demoDB**(`seed.py`, 기본 연결): 연구과제 15 · 집행 1,512 · 인력 68 · 장비 19 · 논문 31 — 모두 가상 데이터. 기본 DB를 쓰는 동안 화면 제목 옆에 "demoDB · 가상 데이터" 표시가 붙고, `DB_URL`로 다른 DB를 연결하면 사라집니다.
 
 ## 폐쇄망
 이 폴더를 복사하면 끝. 외부 통신은 LLM 서버 주소 하나뿐. DB는 읽기 전용으로 열며, 운영 DB에 붙일 때는 읽기 전용 계정을 쓰세요.
+
+## 출처·감사 (Credits)
+
+- 파이썬 표준 라이브러리(sqlite3)만 씁니다. 선택 드라이버(psycopg, pymysql)는 운영자가 따로 설치. `sample/research.db` 는 `seed.py` 로 만든 가상 데이터
+- **LLM 실행** — OpenAI 호환 API 로 호출합니다(모델 가중치는 동봉하지 않음). 기본 배포는 [Ollama](https://github.com/ollama/ollama) (MIT) 위의 Google [Gemma](https://ai.google.dev/gemma) `gemma4:31b` — 모델 이용 조건은 Gemma 배포처 참고.
+- 이 도구는 [agent-page-portal](https://github.com/gggg8657/agent-page-portal) 에 연결해 쓰도록 만들었습니다(단독 실행도 됨).
+
+저작권 표기·전체 목록은 `NOTICE` 를 보세요.

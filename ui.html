@@ -5,14 +5,15 @@
 <style>
   :root{--bg:#fafaf8;--fg:#1f1f1f;--muted:#777;--line:#ddd;--acc:#2f6fed}
   body{font:15px/1.6 -apple-system,"Pretendard","Apple SD Gothic Neo",system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:0}
-  .wrap{display:grid;grid-template-columns:280px 1fr;min-height:100vh}
+  .wrap{display:grid;grid-template-columns:280px minmax(0,1fr);min-height:100vh}
   aside{border-right:1px solid var(--line);padding:14px;background:#fff;font-size:13px;overflow:auto}
-  main{padding:18px 22px;max-width:1100px}
-  h1{font-size:19px;margin:0 0 4px}h1 small{font-weight:400;color:var(--muted);font-size:13px}
+  main{padding:18px 22px;max-width:1100px;min-width:0;overflow-wrap:anywhere}
+  h1{font-size:19px;margin:0 0 4px}.demo{display:inline-block;vertical-align:middle;font-size:12px;font-weight:700;color:#9a3412;background:#ffedd5;border:1px solid #fdba74;border-radius:6px;padding:1px 7px}h1 small{font-weight:400;color:var(--muted);font-size:13px}
   textarea,input,select,button{font:inherit}
   textarea{width:100%;height:70px;padding:10px;border:1px solid var(--line);border-radius:6px;box-sizing:border-box;resize:vertical}
   .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0}
   select,button{padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:#fff}
+  .bar select{max-width:min(260px,75vw)}
   button.primary{background:var(--acc);color:#fff;border-color:var(--acc);padding:6px 22px;cursor:pointer}button:disabled{opacity:.5}
   #status,#stages{color:var(--muted);font-size:13px;min-height:1.3em}
   table{border-collapse:collapse;font-size:13px;width:100%;background:#fff}th,td{border:1px solid var(--line);padding:4px 8px;text-align:left;white-space:nowrap}
@@ -22,11 +23,11 @@
   pre,.sql{white-space:pre-wrap;background:#f1f1ee;padding:10px;border-radius:6px;font-size:13px;font-family:ui-monospace,Menlo,monospace}
   textarea.sql{height:90px;font-family:ui-monospace,Menlo,monospace;font-size:13px}
   .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:600}.ok{background:#dff5e1;color:#1a6b2a}.warn{background:#fff2cc;color:#8a6100}.bad{background:#fde2e2;color:#a33}
-  aside h3{font-size:13px;margin:12px 0 4px}aside .t{margin:6px 0}aside .t b{display:block}aside input{width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:4px;padding:2px 5px;font-size:12px;margin:1px 0}
+  aside h3{font-size:13px;margin:12px 0 4px}aside .t{margin:6px 0}aside .t b{display:block;overflow-wrap:anywhere}aside input{width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:4px;padding:2px 5px;font-size:12px;margin:1px 0}
   aside .c{display:flex;gap:4px;align-items:center;color:#555}aside .c span{flex:0 0 90px;overflow:hidden;text-overflow:ellipsis}
-  #runs li{list-style:none;cursor:pointer;padding:2px 0}#runs li:hover{color:var(--acc)}#runs{padding:0;margin:0}
+  #runs li{list-style:none;cursor:pointer;padding:2px 0;overflow-wrap:anywhere}#runs li:hover{color:var(--acc)}#runs{padding:0;margin:0}
   details{margin-top:12px}summary{cursor:pointer;color:var(--muted);font-size:13px}
-  @media(max-width:800px){.wrap{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid var(--line)}}
+  @media(max-width:800px){.wrap{grid-template-columns:minmax(0,1fr)}aside{border-right:0;border-bottom:1px solid var(--line)}}
 </style>
 <div class="wrap">
 <aside>
@@ -36,7 +37,7 @@
   <details open><summary>이전 질문</summary><ul id="runs"></ul></details>
 </aside>
 <main>
-  <h1>sql-local <small>— 자연어 → SQL → 표·차트 (로컬 LLM)</small></h1>
+  <h1>sql-local <span id="demoTag" class="demo" hidden title="seed.py 로 만든 가상(더미) 데이터입니다. 실제 연구원 데이터가 아닙니다">demoDB · 가상 데이터</span> <small>— 자연어 → SQL → 표·차트 (로컬 LLM)</small></h1>
   <div id="stages"></div>
   <textarea id="q" placeholder="예: 부서별 과제 예산 합계를 큰 순서로 / 2024년 월별 집행액 추이 / 논문이 가장 많은 과제 5개"></textarea>
   <div class="bar">
@@ -71,7 +72,8 @@ async function loadSchema() {
   const s = await fetch('api/schema').then(r => r.json());
   if (s.error) { $('schema').textContent = s.error; return; }
   notes = s.notes || {};
-  $('dbname').textContent = s.kind + ' · ' + s.db.split('/').pop();
+  $('dbname').textContent = (s.demo ? '[demoDB] ' : '') + s.kind + ' · ' + s.db.split('/').pop();
+  $('demoTag').hidden = !s.demo;
   $('schema').innerHTML = s.tables.map(t => `<div class="t"><b>${esc(t.name)}</b><input data-t="${esc(t.name)}" data-c="_" placeholder="테이블 설명" value="${esc((notes[t.name] || {})._ || '')}">` +
     t.cols.map(([c, ty]) => `<div class="c"><span title="${esc(c)} ${esc(ty)}">${esc(c)}</span><input data-t="${esc(t.name)}" data-c="${esc(c)}" placeholder="${esc(ty)}" value="${esc((notes[t.name] || {})[c] || '')}"></div>`).join('') +
     (t.fks.length ? `<div style="color:#999">FK ${t.fks.join(', ')}</div>` : '') + `</div>`).join('');
