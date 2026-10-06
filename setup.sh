@@ -147,7 +147,7 @@ ok "$MODEL"
 
 # ── 6. 자가검증 ──────────────────────────────────────────────────────────
 step "자가검증"
-[ -f sample/research.db ] || "$PY" seed.py >/dev/null; spin "안전필터·차트·재생성 검증" "$PY" selftest.py || die "selftest 실패"
+[ -f sample/research.db ] || "$PY" seed.py >/dev/null; spin "안전필터·차트·재생성 검증" env -u WORKSPACE "$PY" selftest.py || die "selftest 실패"
 ok "안전필터 · LIMIT · 재생성 · SVG 차트 · CSV 통과"
 
 # ── 7. 웹 서버 ───────────────────────────────────────────────────────────
