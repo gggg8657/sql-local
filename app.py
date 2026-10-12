@@ -345,7 +345,7 @@ def parse_json(txt):
     return j
 
 
-def ask(question, history=None, model=MODEL, emit=lambda ev: None):
+def ask(question, history=None, model=MODEL, emit=lambda ev: None, ws=WS):
     """질문 → SQL(JSON) → 필터 → 실행(실패 시 1회 재생성) → 결과 dict."""
     run_id = f"{datetime.date.today()}-{secrets.token_hex(2)}"
     system = system_prompt()
@@ -361,7 +361,7 @@ def ask(question, history=None, model=MODEL, emit=lambda ev: None):
               "ts": datetime.datetime.now().isoformat(timespec="seconds")}
     if not j.get("sql"):
         result["error"] = result["explanation"] or "스키마로 답할 수 없는 질문"
-        return _save(result)
+        return _save(result, ws)
     for attempt in (0, 1):
         try:
             sql = sanitize(j["sql"])
@@ -381,10 +381,10 @@ def ask(question, history=None, model=MODEL, emit=lambda ev: None):
             result["repaired"] = True
     c = result["chart"]
     result["svg"] = chart_svg(c.get("type"), result["columns"], result["rows"], c.get("x"), c.get("y")) if result["rows"] else None
-    return _save(result)
+    return _save(result, ws)
 
 
-def rerun(sql, chart=None):
+def rerun(sql, chart=None, ws=WS):
     """사용자가 고친 SQL 재실행 (LLM 0콜)."""
     s = sanitize(sql)
     cols, rows, trunc = db().query(s)
@@ -392,16 +392,26 @@ def rerun(sql, chart=None):
     r = {"run_id": f"{datetime.date.today()}-{secrets.token_hex(2)}", "question": "(수동 SQL)", "model": None, "explanation": "", "chart": c,
          "sql": s, "error": None, "repaired": False, "columns": cols, "rows": rows, "truncated": trunc,
          "svg": chart_svg(c.get("type"), cols, rows, c.get("x"), c.get("y")), "ts": datetime.datetime.now().isoformat(timespec="seconds")}
-    return _save(r)
+    return _save(r, ws)
 
 
-def _save(r):
-    write(os.path.join(WS, "runs", r["run_id"] + ".json"), json.dumps(r, ensure_ascii=False, default=str))
+def _save(r, ws=WS):
+    write(os.path.join(ws, "runs", r["run_id"] + ".json"), json.dumps(r, ensure_ascii=False, default=str))
     return r
 
 
-def list_runs():
-    d = os.path.join(WS, "runs")
+def user_ws(h):
+    """포털이 넘긴 사용자별 작업 폴더. owner(서버 주인)·헤더 없음(단독 실행) = 예전 WORKSPACE 그대로"""
+    u = (h.headers.get("X-Agent-User") or "owner").strip()
+    if u == "owner":
+        return WS
+    d = os.path.join(WS, "u", re.sub(r"[^A-Za-z0-9_.-]", "_", u)[:64] or "_")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def list_runs(ws=WS):
+    d = os.path.join(ws, "runs")
     out = []
     if os.path.isdir(d):
         for f in sorted(os.listdir(d), reverse=True)[:50]:
@@ -460,10 +470,10 @@ class H(BaseHTTPRequestHandler):
             if self.path == "/api/schema":
                 return self._send({"db": DB_URL, "demo": DEMO, "kind": db().kind, "tables": [{"name": t["name"], "cols": t["cols"], "fks": t["fks"]} for t in db().tables()], "notes": load_notes()})
             if self.path == "/api/runs":
-                return self._send(list_runs())
+                return self._send(list_runs(user_ws(self)))
             m = re.fullmatch(r"/api/runs/([\w-]+)(\.csv)?", self.path)
             if m:
-                j = json.load(open(os.path.join(WS, "runs", m.group(1) + ".json"), encoding="utf-8"))
+                j = json.load(open(os.path.join(user_ws(self), "runs", m.group(1) + ".json"), encoding="utf-8"))
                 if m.group(2):
                     return self._send(to_csv(j["columns"], j["rows"]).encode("utf-8"), "text/csv; charset=utf-8", name=m.group(1) + ".csv")
                 return self._send(j)
@@ -480,7 +490,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send({"ok": True})
             if self.path == "/api/rerun":
                 req = self._json()
-                return self._send(rerun(req.get("sql", ""), req.get("chart")))
+                return self._send(rerun(req.get("sql", ""), req.get("chart"), user_ws(self)))
             if self.path == "/api/ask":
                 req = self._json()
                 q = (req.get("question") or "").strip()
@@ -495,7 +505,7 @@ class H(BaseHTTPRequestHandler):
                     self.wfile.write(f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n".encode())
                     self.wfile.flush()
                 try:
-                    emit({"done": ask(q, req.get("history") or [], req.get("model") or MODEL, emit)})
+                    emit({"done": ask(q, req.get("history") or [], req.get("model") or MODEL, emit, user_ws(self))})
                 except Exception as e:
                     emit({"error": f"{type(e).__name__}: {e}"})
                 return
@@ -520,4 +530,4 @@ if __name__ == "__main__":
         sys.exit(0)
     db()
     print(f"sql-local → http://localhost:{PORT}  (db={DB_URL}, model={MODEL}, llm={LLM_API} {LLM_BASE})  {_SIG}")
-    ThreadingHTTPServer(("", PORT), H).serve_forever()
+    ThreadingHTTPServer((os.environ.get("BIND", ""), PORT), H).serve_forever()

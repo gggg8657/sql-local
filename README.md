@@ -55,6 +55,7 @@ python3 selftest.py                                               # LLM 없이 �
 | `DB_URL` | `sample/research.db` | sqlite 경로 또는 postgresql:// mysql:// |
 | `PORT` | `8772` | |
 | `WORKSPACE` | `./_workspace` | 스키마 설명·실행 기록 저장 폴더 (포털이 도구별 데이터 폴더로 지정) |
+| `BIND` | (모든 인터페이스) | 듣는 주소. 포털은 `127.0.0.1` 로 띄워 포털을 거쳐서만 접근 |
 
 ## 동작
 
@@ -68,6 +69,7 @@ python3 selftest.py                                               # LLM 없이 �
 
 - 이전 질문 3개의 SQL·결과 머리를 다음 질문에 넘겨 "그중 2024년만", "그 과제의 논문은?" 같은 후속 질문이 됩니다.
 - 왼쪽 스키마 패널에 열 설명(예: `IF` = 저널 영향력 지수)을 적고 저장하면 프롬프트에 들어가 정확도가 올라갑니다. `$WORKSPACE/schema_notes.json`.
+- 질문·SQL·결과 기록은 사용자별로 따로 저장합니다(포털 접속자 기준, 포털이 넘기는 `X-Agent-User` 헤더 → `$WORKSPACE/u/<사용자>/runs`). 서버 주인(헤더 없음·`owner`)은 `$WORKSPACE` 그대로라 예전 기록도 보입니다. DB 와 열 설명(`schema_notes.json`)은 모두가 같은 DB 를 보므로 **공유됨**.
 - **demoDB**(`seed.py`, 기본 연결): 연구과제 15 · 집행 1,512 · 인력 68 · 장비 19 · 논문 31 — 모두 가상 데이터. 기본 DB를 쓰는 동안 화면 제목 옆에 "demoDB · 가상 데이터" 표시가 붙고, `DB_URL`로 다른 DB를 연결하면 사라집니다.
 
 ## 폐쇄망
