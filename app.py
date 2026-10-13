@@ -87,9 +87,11 @@ def _clean(out):
     return out.strip()
 
 
-def openai_chat(system, user, model, on_token=None):
+def openai_chat(system, user, model, on_token=None, json_mode=False):
     body = {"model": model, "stream": True, "temperature": 0.1,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}  # 문법 맞는 JSON 강제(따옴표 안 이스케이프 등 방지)
     hdr = {"Content-Type": "application/json", **({"Authorization": f"Bearer {LLM_KEY}"} if LLM_KEY else {})}
     req = urllib.request.Request(LLM_BASE + "/chat/completions", json.dumps(body).encode(), hdr)
     buf = []
@@ -109,9 +111,9 @@ def openai_chat(system, user, model, on_token=None):
     return "".join(buf)
 
 
-def ollama(system, user, model, on_token=None):
+def ollama(system, user, model, on_token=None, json_mode=False):
     if LLM_API == "openai":
-        return openai_chat(system, user, model, on_token)
+        return openai_chat(system, user, model, on_token, json_mode)
     body = {"model": model, "stream": True, "think": False,
             "options": {"temperature": 0.1, "num_ctx": NUM_CTX},
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
@@ -454,7 +456,7 @@ def ask(question, history=None, model=MODEL, emit=lambda ev: None, ws=WS):
         user += f"[이전 질문] {h['question']}\n[이전 SQL] {h['sql']}\n[이전 결과 머리] {h.get('head', '')}\n\n"
     user += f"[질문]\n{question}"
     emit({"stage": "llm", "msg": f"{model} SQL 생성"})
-    raw = ollama(system, user, model, on_token=lambda t: emit({"token": t}))
+    raw = ollama(system, user, model, on_token=lambda t: emit({"token": t}), json_mode=True)
     j = parse_json(raw)
     result = {"run_id": run_id, "question": question, "model": model, "explanation": j.get("explanation", ""),
               "chart": j.get("chart", {}), "sql": None, "error": None, "repaired": False, "columns": [], "rows": [], "truncated": False, "svg": None,
@@ -474,7 +476,7 @@ def ask(question, history=None, model=MODEL, emit=lambda ev: None, ws=WS):
             if attempt == 1:
                 break
             emit({"stage": "repair", "msg": f"오류 수정 재생성: {scrub(e)}"})
-            raw = ollama(system, user + f"\n\n[직전 SQL]\n{j['sql']}\n[실행 오류]\n{scrub(e)}\n위 오류를 고친 JSON 만 다시 출력.", model, on_token=lambda t: emit({"token": t}))
+            raw = ollama(system, user + f"\n\n[직전 SQL]\n{j['sql']}\n[실행 오류]\n{scrub(e)}\n위 오류를 고친 JSON 만 다시 출력.", model, on_token=lambda t: emit({"token": t}), json_mode=True)
             j = parse_json(raw)
             result["explanation"] = j.get("explanation", result["explanation"])
             result["chart"] = j.get("chart", result["chart"])

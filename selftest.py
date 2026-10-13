@@ -23,7 +23,7 @@ assert cols[:2] == ["id", "과제id"] and len(rows) == 500 and trunc
 
 # 3) 가짜 LLM: 정상 JSON → bar 차트
 calls = []
-def fake(system, user, model, on_token=None):
+def fake(system, user, model, on_token=None, **kw):
     calls.append(user)
     return FAKE[min(len(calls) - 1, len(FAKE) - 1)]
 app.ollama = fake
