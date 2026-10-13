@@ -58,6 +58,34 @@ FAKE = ['{"sql": "SELECT 없음 FROM 인력", "explanation": "", "chart": {}}']
 r6 = app.ask("x", [])
 assert r6["error"] and r6["repaired"]
 assert any(x["run_id"] == r3["run_id"] for x in app.list_runs())
+# 7) 보안: 접속 문자열 감추기 · 위험 함수 차단 · 스키마 설명 주인 규칙
+assert app.db_label("postgresql://u:pw@10.0.0.1:5432/research") == "research" and app.db_label("/a/b/x.db") == "x.db"
+_old = app.DB_URL
+app.DB_URL = "postgresql://scott:tiger9@dbhost:5432/research"
+_m = app.scrub("OperationalError: connection to dbhost failed for user scott (postgresql://scott:tiger9@dbhost:5432/research)")
+assert "tiger9" not in _m and "scott" not in _m and "dbhost" not in _m, _m
+app.DB_URL = _old
+for bad in ("SELECT pg_read_file('/etc/passwd')", "SELECT set_config('default_transaction_read_only','off',false)",
+            "WITH x AS (MERGE INTO t USING s ON 1=1 WHEN MATCHED THEN DELETE) SELECT 1", "SELECT * INTO 새표 FROM 인력", "SELECT pg_sleep(100)",
+            "SELECT sleep(100)", "SELECT pg_terminate_backend(1)", "SELECT query_to_xml('delete from t', true, true, '')"):
+    try:
+        app.sanitize(bad); raise AssertionError("통과하면 안 됨: " + bad)
+    except ValueError:
+        pass
+import tempfile
+_ws = app.WS
+app.WS = tempfile.mkdtemp()
+app.save_notes({"인력": {"_": "사람"}}, "alice")
+try:
+    app.save_notes({"인력": {"_": "바꿈"}}, "bob"); raise AssertionError("남의 설명을 고치면 안 됨")
+except PermissionError as e:
+    assert e.args[0][0] == 403
+app.save_notes({"인력": {"_": "사람"}, "장비": {"_": "기계"}}, "bob")  # 남의 것은 그대로 두고 자기 것 추가 → 허용
+assert app.notes_locked("bob") == ["인력"] and app.notes_locked("alice") == ["장비"] and app.notes_locked("owner") == []
+app.save_notes({"장비": {"_": "기계"}}, "owner")  # owner 는 지울 수 있음
+assert list(app.load_notes()) == ["장비"]
+app.WS = _ws
+
 # 저작권 표기: 서버가 화면에 붙이는 코드가 있어야 한다 (LICENSE·NOTICE)
 _src = open(__import__("os").path.join(__import__("os").path.dirname(__import__("os").path.abspath(__file__)), "app.py"), encoding="utf-8").read()
 assert "wqkgMjAyNiBnZ2dnODY1NyDCtyBkb25nanVraW0uZGV2QGdtYWlsLmNvbQ==" in _src and "signed(" in _src and "X-Author" in _src, "저작권 표기 누락"

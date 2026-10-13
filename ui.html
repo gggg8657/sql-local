@@ -64,24 +64,26 @@
 const $ = id => document.getElementById(id);
 const esc = v => String(v).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const MODEL_DEFAULT = %MODEL%;
-let history = [], cur = null, notes = {};
+let history = [], cur = null, notes = {}, locked = [];
 fetch('api/models').then(r => r.json()).then(ms => { $('model').innerHTML = ms.map(m => `<option ${m === MODEL_DEFAULT ? 'selected' : ''}>${m}</option>`).join(''); })
   .catch(() => $('status').textContent = 'LLM 서버에 연결할 수 없습니다');
 
 async function loadSchema() {
   const s = await fetch('api/schema').then(r => r.json());
   if (s.error) { $('schema').textContent = s.error; return; }
-  notes = s.notes || {};
+  notes = s.notes || {}; locked = s.locked || [];
   $('dbname').textContent = (s.demo ? '[demoDB] ' : '') + s.kind + ' · ' + s.db.split('/').pop();
   $('demoTag').hidden = !s.demo;
-  $('schema').innerHTML = s.tables.map(t => `<div class="t"><b>${esc(t.name)}</b><input data-t="${esc(t.name)}" data-c="_" placeholder="테이블 설명" value="${esc((notes[t.name] || {})._ || '')}">` +
-    t.cols.map(([c, ty]) => `<div class="c"><span title="${esc(c)} ${esc(ty)}">${esc(c)}</span><input data-t="${esc(t.name)}" data-c="${esc(c)}" placeholder="${esc(ty)}" value="${esc((notes[t.name] || {})[c] || '')}"></div>`).join('') +
+  $('schema').innerHTML = s.tables.map(t => `<div class="t"><b>${esc(t.name)}</b><input data-t="${esc(t.name)}" data-c="_" placeholder="테이블 설명" ${locked.includes(t.name) ? 'disabled title="다른 사람이 쓴 설명 — 만든 사람이나 관리자만 고칠 수 있습니다"' : ''} value="${esc((notes[t.name] || {})._ || '')}">` +
+    t.cols.map(([c, ty]) => `<div class="c"><span title="${esc(c)} ${esc(ty)}">${esc(c)}</span><input data-t="${esc(t.name)}" data-c="${esc(c)}" placeholder="${esc(ty)}" ${locked.includes(t.name) ? 'disabled' : ''} value="${esc((notes[t.name] || {})[c] || '')}"></div>`).join('') +
     (t.fks.length ? `<div style="color:#999">FK ${t.fks.join(', ')}</div>` : '') + `</div>`).join('');
 }
 $('saveNotes').onclick = async () => {
   const n = {};
   $('schema').querySelectorAll('input').forEach(i => { if (i.value.trim()) (n[i.dataset.t] = n[i.dataset.t] || {})[i.dataset.c] = i.value.trim(); });
-  await fetch('api/notes', { method: 'POST', body: JSON.stringify(n) }); notes = n; $('status').textContent = '스키마 설명 저장됨';
+  const r = await fetch('api/notes', { method: 'POST', body: JSON.stringify(n) });
+  if (!r.ok) { $('status').textContent = (await r.json().catch(() => ({}))).error || '저장 실패'; return; }
+  notes = n; $('status').textContent = '스키마 설명 저장됨';
 };
 async function loadRuns() {
   const rs = await fetch('api/runs').then(r => r.json());

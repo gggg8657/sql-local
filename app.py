@@ -24,6 +24,7 @@ import sqlite3
 import sys
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -39,7 +40,32 @@ DB_URL = os.environ.get("DB_URL", os.path.join(ROOT, "sample", "research.db"))
 DEMO = os.path.abspath(DB_URL) == os.path.join(ROOT, "sample", "research.db")  # seed.py 가 만든 가상 데이터 → 화면에 demoDB 표시
 MAX_ROWS = 500
 TIMEOUT_S = 10
-FORBID = re.compile(r"\b(insert|update|delete|drop|alter|create|replace|truncate|pragma|attach|detach|vacuum|grant|revoke|exec|execute|copy|into\s+outfile|load_file)\b", re.I)
+FORBID = re.compile(r"\b(insert|update|delete|drop|alter|create|replace|truncate|pragma|attach|detach|vacuum|grant|revoke|exec|execute|copy|into|load_file"
+                    r"|merge"  # WITH 안의 데이터 변경(PostgreSQL)
+                    # 읽기 전용 연결이어도 위험한 함수: 파일 읽기·쓰기, 다른 세션 끊기, 설정 바꾸기, 동적 SQL, 지연
+                    r"|set_config|pg_read_file|pg_read_binary_file|pg_ls_dir|pg_stat_file|lo_import|lo_export|lo_from_bytea|lo_put|dblink\w*"
+                    r"|pg_terminate_backend|pg_cancel_backend|pg_reload_conf|pg_rotate_logfile|pg_sleep\w*|query_to_xml\w*|query_to_json\w*"
+                    r"|sleep|benchmark|get_lock|release_lock|dumpfile|load_extension|readfile|writefile)\b", re.I)
+
+
+def db_label(url):
+    """화면에 보일 DB 이름: 드라이버 종류와 DB 이름만 (사용자·비밀번호·호스트·경로는 감춤)"""
+    if url.startswith(("postgres", "mysql")):
+        u = urllib.parse.urlparse(url)
+        return u.path.lstrip("/").split("?")[0] or "(기본 DB)"
+    return os.path.basename(url)
+
+
+def scrub(msg):
+    """오류 문자열에서 접속 문자열·비밀번호·사용자·호스트·파일 경로를 가린다."""
+    msg = str(msg)
+    secrets_ = [DB_URL, os.path.abspath(DB_URL) if not DB_URL.startswith(("postgres", "mysql")) else ""]
+    if DB_URL.startswith(("postgres", "mysql")):
+        u = urllib.parse.urlparse(DB_URL)
+        secrets_ += [u.password or "", u.netloc, u.hostname or "", u.username or ""]
+    for x in sorted({x for x in secrets_ if x and len(x) >= 2}, key=len, reverse=True):
+        msg = msg.replace(urllib.parse.unquote(x), "***").replace(x, "***")
+    return msg.replace(ROOT, ".").replace(WS, "<workspace>")
 
 
 def read(p):
@@ -134,17 +160,47 @@ class DB:
         if url.startswith("postgres"):
             import psycopg  # noqa  (pip install psycopg[binary])
             self.kind, self.dialect = "postgresql", "PostgreSQL. 날짜 함수는 to_char/EXTRACT. 식별자 큰따옴표."
-            self._connect = lambda: psycopg.connect(url, autocommit=True)
+            # 읽기 전용 트랜잭션 + 서버 쪽 시간 제한(statement_timeout). 쿼리 하나마다 새 연결.
+            self._connect = lambda: psycopg.connect(url, autocommit=True, connect_timeout=TIMEOUT_S,
+                                                    options=f"-c default_transaction_read_only=on -c statement_timeout={TIMEOUT_S * 1000}")
         elif url.startswith("mysql"):
             import pymysql  # noqa  (pip install pymysql)
             u = urllib.parse.urlparse(url)
             self.kind, self.dialect = "mysql", "MySQL. 식별자는 백틱(`). 날짜 함수는 DATE_FORMAT/YEAR."
-            self._connect = lambda: pymysql.connect(host=u.hostname, port=u.port or 3306, user=u.username, password=u.password or "", database=u.path.lstrip("/"))
+            self._connect = lambda: self._mysql(pymysql, u)
         else:
             if not os.path.exists(url):
-                raise FileNotFoundError(f"sqlite 파일 없음: {url} (python3 seed.py 로 샘플 생성)")
+                raise FileNotFoundError(f"sqlite 파일 없음: {os.path.basename(url)} (python3 seed.py 로 샘플 생성)")
             self.kind, self.dialect = "sqlite", "SQLite. 날짜는 TEXT(YYYY-MM-DD) 라 substr/strftime 사용. 식별자 큰따옴표. ILIKE 없음(LIKE 는 대소문자 무시)."
             self._connect = lambda: sqlite3.connect(f"file:{url}?mode=ro", uri=True, check_same_thread=False)
+
+    @staticmethod
+    def _mysql(pymysql, u):
+        c = pymysql.connect(host=u.hostname, port=u.port or 3306, user=urllib.parse.unquote(u.username or ""),
+                            password=urllib.parse.unquote(u.password or ""), database=u.path.lstrip("/"), connect_timeout=TIMEOUT_S)
+        cur = c.cursor()
+        cur.execute("SET SESSION TRANSACTION READ ONLY")  # 쓰기 차단 (권한이 읽기 전용인 계정을 쓰는 것이 가장 좋음)
+        for q in (f"SET SESSION max_execution_time={TIMEOUT_S * 1000}",  # MySQL 5.7.8+ (SELECT 만)
+                  f"SET SESSION max_statement_time={TIMEOUT_S}"):         # MariaDB 10.1+
+            try:
+                cur.execute(q)
+            except Exception:
+                pass
+        return c
+
+    def _cancel(self, c):
+        """시간 초과 시 실행 중인 쿼리 끊기 (서버 쪽 제한이 안 먹는 경우를 위한 보조)."""
+        try:
+            if self.kind == "postgresql":
+                c.cancel()
+            elif self.kind == "mysql":
+                k = self._connect()
+                try:
+                    k.cursor().execute(f"KILL QUERY {int(c.thread_id())}")
+                finally:
+                    k.close()
+        except Exception:
+            pass
 
     def tables(self):
         c = self._connect()
@@ -179,7 +235,12 @@ class DB:
         done = threading.Event()
         if self.kind == "sqlite":
             c.set_progress_handler(lambda: 1 if done.is_set() else 0, 10000)
-        t = threading.Timer(TIMEOUT_S, done.set)
+
+        def expire():
+            done.set()
+            if self.kind != "sqlite":
+                self._cancel(c)
+        t = threading.Timer(TIMEOUT_S, expire)
         t.start()
         try:
             cur = c.cursor()
@@ -187,8 +248,10 @@ class DB:
             rows = cur.fetchmany(MAX_ROWS + 1)
             cols = [d[0] for d in cur.description]
             return cols, [list(r) for r in rows[:MAX_ROWS]], len(rows) >= MAX_ROWS  # ponytail: LIMIT 500 강제라 500행이면 "더 있을 수 있음"으로 표시
-        except sqlite3.OperationalError as e:
-            if "interrupted" in str(e):
+        except Exception as e:
+            low = str(e).lower()
+            if done.is_set() or "interrupted" in low or "statement timeout" in low or "canceling statement" in low \
+                    or "max_execution_time" in low or "max_statement_time" in low or "query execution was interrupted" in low:
                 raise RuntimeError(f"쿼리가 {TIMEOUT_S}초를 넘겨 중단됨")
             raise
         finally:
@@ -324,6 +387,43 @@ def load_notes():
     return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
 
 
+def load_notes_by():
+    """테이블별 설명을 처음 쓴 계정. 기록 없는 기존 설명은 owner 만 고칠 수 있다."""
+    p = os.path.join(WS, "schema_notes_by.json")
+    return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
+
+
+def notes_locked(user):
+    """이 사용자가 고칠 수 없는 테이블 이름 목록 (다른 사람이 쓴 설명)."""
+    if user == "owner":
+        return []
+    by = load_notes_by()
+    return sorted(t for t, n in load_notes().items() if n and by.get(t) != user)
+
+
+_notes_lock = threading.Lock()
+
+
+def save_notes(new, user):
+    """테이블 단위로 바뀐 것만 검사: 남이 쓴(또는 만든 사람 기록이 없는) 설명은 만든 사람·owner 만 고치거나 지움."""
+    if not isinstance(new, dict) or not all(isinstance(v, dict) and all(isinstance(x, str) for x in v.values()) for v in new.values()):
+        raise PermissionError((400, "형식: {테이블: {열: 설명}}"))
+    with _notes_lock:
+        old, by = load_notes(), load_notes_by()
+        for t in set(old) | set(new):
+            if (old.get(t) or {}) == (new.get(t) or {}):
+                continue
+            if old.get(t) and user != "owner" and by.get(t) != user:
+                raise PermissionError((403, f"'{t}' 설명은 만든 사람이나 관리자만 고칠 수 있습니다"))
+            if not new.get(t):
+                by.pop(t, None)
+            elif not old.get(t):
+                by[t] = user  # 새로 쓴 설명 → 쓴 사람이 주인
+        new = {t: v for t, v in new.items() if v}
+        write(os.path.join(WS, "schema_notes.json"), json.dumps(new, ensure_ascii=False, indent=1))
+        write(os.path.join(WS, "schema_notes_by.json"), json.dumps(by, ensure_ascii=False, indent=1))
+
+
 def system_prompt():
     notes = load_notes()
     key = json.dumps(notes, sort_keys=True, ensure_ascii=False)
@@ -370,11 +470,11 @@ def ask(question, history=None, model=MODEL, emit=lambda ev: None, ws=WS):
             result.update(sql=sql, columns=cols, rows=rows, truncated=trunc, error=None)
             break
         except Exception as e:  # noqa — 어떤 실패든 1회 재생성
-            result.update(sql=j.get("sql"), error=f"{type(e).__name__}: {e}")
+            result.update(sql=j.get("sql"), error=scrub(f"{type(e).__name__}: {e}"))
             if attempt == 1:
                 break
-            emit({"stage": "repair", "msg": f"오류 수정 재생성: {e}"})
-            raw = ollama(system, user + f"\n\n[직전 SQL]\n{j['sql']}\n[실행 오류]\n{e}\n위 오류를 고친 JSON 만 다시 출력.", model, on_token=lambda t: emit({"token": t}))
+            emit({"stage": "repair", "msg": f"오류 수정 재생성: {scrub(e)}"})
+            raw = ollama(system, user + f"\n\n[직전 SQL]\n{j['sql']}\n[실행 오류]\n{scrub(e)}\n위 오류를 고친 JSON 만 다시 출력.", model, on_token=lambda t: emit({"token": t}))
             j = parse_json(raw)
             result["explanation"] = j.get("explanation", result["explanation"])
             result["chart"] = j.get("chart", result["chart"])
@@ -398,6 +498,10 @@ def rerun(sql, chart=None, ws=WS):
 def _save(r, ws=WS):
     write(os.path.join(ws, "runs", r["run_id"] + ".json"), json.dumps(r, ensure_ascii=False, default=str))
     return r
+
+
+def agent_user(h):
+    return (h.headers.get("X-Agent-User") or "owner").strip() or "owner"
 
 
 def user_ws(h):
@@ -468,7 +572,8 @@ class H(BaseHTTPRequestHandler):
             if self.path == "/api/models":
                 return self._send(models())
             if self.path == "/api/schema":
-                return self._send({"db": DB_URL, "demo": DEMO, "kind": db().kind, "tables": [{"name": t["name"], "cols": t["cols"], "fks": t["fks"]} for t in db().tables()], "notes": load_notes()})
+                return self._send({"db": db_label(DB_URL), "demo": DEMO, "kind": db().kind, "tables": [{"name": t["name"], "cols": t["cols"], "fks": t["fks"]} for t in db().tables()],
+                                   "notes": load_notes(), "locked": notes_locked(agent_user(self))})
             if self.path == "/api/runs":
                 return self._send(list_runs(user_ws(self)))
             m = re.fullmatch(r"/api/runs/([\w-]+)(\.csv)?", self.path)
@@ -481,12 +586,16 @@ class H(BaseHTTPRequestHandler):
         except FileNotFoundError:
             self._send({"error": "없음"}, code=404)
         except Exception as e:
-            self._send({"error": f"{type(e).__name__}: {e}"}, code=500)
+            self._send({"error": scrub(f"{type(e).__name__}: {e}")}, code=500)
 
     def do_POST(self):
         try:
             if self.path == "/api/notes":
-                write(os.path.join(WS, "schema_notes.json"), json.dumps(self._json(), ensure_ascii=False, indent=1))
+                try:
+                    save_notes(self._json(), agent_user(self))
+                except PermissionError as e:
+                    code, msg = e.args[0]
+                    return self._send({"error": msg}, code=code)
                 return self._send({"ok": True})
             if self.path == "/api/rerun":
                 req = self._json()
@@ -507,11 +616,13 @@ class H(BaseHTTPRequestHandler):
                 try:
                     emit({"done": ask(q, req.get("history") or [], req.get("model") or MODEL, emit, user_ws(self))})
                 except Exception as e:
-                    emit({"error": f"{type(e).__name__}: {e}"})
+                    emit({"error": scrub(f"{type(e).__name__}: {e}")})
                 return
             self._send({"error": "없는 경로"}, code=404)
+        except (ValueError, KeyError, TypeError) as e:  # JSON 깨짐·안전 필터 위반 = 잘못된 요청
+            self._send({"error": scrub(f"{type(e).__name__}: {e}")}, code=400)
         except Exception as e:
-            self._send({"error": f"{type(e).__name__}: {e}"}, code=500)
+            self._send({"error": scrub(f"{type(e).__name__}: {e}")}, code=500)
 
 
 if __name__ == "__main__":
@@ -529,5 +640,5 @@ if __name__ == "__main__":
         print(f"({len(r['rows'])}행{' · 잘림' if r['truncated'] else ''}, 차트 {r['chart'].get('type')})")
         sys.exit(0)
     db()
-    print(f"sql-local → http://localhost:{PORT}  (db={DB_URL}, model={MODEL}, llm={LLM_API} {LLM_BASE})  {_SIG}")
+    print(f"sql-local → http://localhost:{PORT}  (db={db().kind}:{db_label(DB_URL)}, model={MODEL}, llm={LLM_API} {LLM_BASE})  {_SIG}")
     ThreadingHTTPServer((os.environ.get("BIND", ""), PORT), H).serve_forever()
