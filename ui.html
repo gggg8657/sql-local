@@ -109,10 +109,43 @@ function show(j) {
   $('ctype').value = (j.chart && j.chart.type) || 'table';
   const opt = c => j.columns.map(x => `<option ${x === c ? 'selected' : ''}>${x}</option>`).join('');
   $('cx').innerHTML = opt(j.chart && j.chart.x); $('cy').innerHTML = opt(j.chart && j.chart.y);
-  $('chart').innerHTML = j.svg || '';
+  $('chart').innerHTML = j.svg || ''; themeChart();
   $('csv').href = 'api/runs/' + j.run_id + '.csv';
   table(j.columns || [], j.rows || []);
 }
+// 차트 색 — 포털 어두운 테마(html[data-ag-theme$=dark])일 때만 서버가 그린 SVG(흰 종이 색)를 화면에서 테마 색으로.
+// SVG 속성은 그대로 두고 style 로만 덮는다(밝게로 돌아오면 지움). 포털 없이·classic-light 에서는 아무것도 안 바꿈.
+const agDark = () => /dark$/.test(document.documentElement.dataset.agTheme || '');
+const hexRgb = h => { h = h.replace('#', ''); if (h.length === 3) h = [...h].map(c => c + c).join(''); return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16)); };
+const relLum = c => { const [r, g, b] = hexRgb(c).map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+const contrast = (a, b) => { const x = relLum(a), y = relLum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+function onBg(col, bg, min = 3) {  // 계열색이 어두운 바탕에서 3:1 이 안 되면 같은 색상으로 조금씩 밝게
+  if (!/^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(col) || !/^#[0-9a-f]{6}$/i.test(bg)) return col;
+  const rgb = hexRgb(col); let out = col;
+  for (let t = 0; t <= 1 && contrast(out, bg) < min; t += 0.05) out = '#' + rgb.map(v => Math.round(v + (255 - v) * t).toString(16).padStart(2, '0')).join('');
+  return out;
+}
+function themeChart() {
+  const dark = agDark(), cs = getComputedStyle(document.documentElement), tk = (k, d) => cs.getPropertyValue(k).trim() || d;
+  const bg = tk('--ag-surface', '#1a1e25'), ink = tk('--ag-ink', '#e6e8ec'), ink2 = tk('--ag-ink-2', '#b4bbc6'), ink3 = tk('--ag-ink-3', '#939ba7'), line = tk('--ag-line', '#2b313a');
+  $('chart').querySelectorAll('svg').forEach(svg => {
+    if (!dark && !svg._ag) return;
+    svg._ag = dark; svg.style.background = dark ? bg : '';
+    svg.querySelectorAll('text,line,path,rect,circle').forEach(el => {
+      let f = '', s = '';
+      if (dark) {
+        const fa = el.getAttribute('fill'), sa = el.getAttribute('stroke');
+        if (el.tagName === 'text') f = fa === '#555' ? ink2 : fa ? '' : ink;  // 눈금·항목 글자(기본 검정) / 축 이름(#555)
+        else if (fa && fa !== 'none') f = onBg(fa, bg);
+        if (sa === '#eee') s = line; else if (sa === '#999') s = ink3; else if (sa) s = onBg(sa, bg);  // 격자 / 0 기준선 / 꺾은선
+      }
+      el.style.fill = f; el.style.stroke = s;
+    });
+  });
+}
+addEventListener('ag-theme', () => {  // 테마를 바꾸면 다시 칠함 — 처음 붙는 테마 CSS 는 다 읽힌 뒤 한 번 더
+  themeChart(); document.querySelectorAll('link[id^="ag-th-"]').forEach(l => { if (!l.sheet) l.addEventListener('load', themeChart, { once: true }); });
+});
 $('rerun').onclick = async () => {
   $('status').textContent = '재실행 중';
   const j = await fetch('api/rerun', { method: 'POST', body: JSON.stringify({ sql: $('sql').value, chart: { type: $('ctype').value, x: $('cx').value, y: $('cy').value } }) }).then(r => r.json());
