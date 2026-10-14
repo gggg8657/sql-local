@@ -643,4 +643,4 @@ if __name__ == "__main__":
         sys.exit(0)
     db()
     print(f"sql-local → http://localhost:{PORT}  (db={db().kind}:{db_label(DB_URL)}, model={MODEL}, llm={LLM_API} {LLM_BASE})  {_SIG}")
-    ThreadingHTTPServer((os.environ.get("BIND", ""), PORT), H).serve_forever()
+    ThreadingHTTPServer((os.environ.get("BIND", "127.0.0.1"), PORT), __import__("portal_auth").install(H, "sql-local")).serve_forever()
