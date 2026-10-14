@@ -27,6 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import portal_auth  # 포털 서명 확인 관문·오류 문장 정리(원본 agent-page-portal/sdk/portal_auth.py)
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WS = os.environ.get("WORKSPACE") or os.path.join(ROOT, "_workspace")  # 포털이 AGENT_DATA/<도구> 로 모아 줌
@@ -584,6 +585,8 @@ class H(BaseHTTPRequestHandler):
                 if m.group(2):
                     return self._send(to_csv(j["columns"], j["rows"]).encode("utf-8"), "text/csv; charset=utf-8", name=m.group(1) + ".csv")
                 return self._send(j)
+            if self.path.split("?")[0].startswith("/api/"):   # 없는 API 경로는 화면 대신 JSON 404
+                return self._send({"error": "not found"}, code=404)
             self._send(signed(HTML.replace("%MODEL%", json.dumps(MODEL))).encode(), "text/html; charset=utf-8")
         except FileNotFoundError:
             self._send({"error": "없음"}, code=404)
@@ -643,4 +646,4 @@ if __name__ == "__main__":
         sys.exit(0)
     db()
     print(f"sql-local → http://localhost:{PORT}  (db={db().kind}:{db_label(DB_URL)}, model={MODEL}, llm={LLM_API} {LLM_BASE})  {_SIG}")
-    ThreadingHTTPServer((os.environ.get("BIND", "127.0.0.1"), PORT), __import__("portal_auth").install(H, "sql-local")).serve_forever()
+    ThreadingHTTPServer((os.environ.get("BIND", "127.0.0.1"), PORT), portal_auth.install(H, "sql-local")).serve_forever()
