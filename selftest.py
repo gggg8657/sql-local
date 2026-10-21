@@ -86,6 +86,45 @@ app.save_notes({"장비": {"_": "기계"}}, "owner")  # owner 는 지울 수 있
 assert list(app.load_notes()) == ["장비"]
 app.WS = _ws
 
+# 브라우저가 떠나도(첫 이벤트 뒤 쓰기가 BrokenPipeError) 질의는 끝까지 — 실행 기록에 남고 서버 오류·트레이스백 없음
+import io, sys, tempfile, threading, urllib.request
+from http.server import ThreadingHTTPServer
+class Cut:
+    def __init__(s, f, n): s.f, s.n = f, n
+    def write(s, b):
+        s.n -= 1
+        if s.n < 0: raise BrokenPipeError(32, "Broken pipe")
+        return s.f.write(b)
+    def flush(s): pass
+    def __getattr__(s, k): return getattr(s.f, k)
+class CutH(app.H):
+    def setup(s): super().setup(); s.wfile = Cut(s.wfile, 2)  # 응답 머리 + 첫 이벤트까지만 닿음
+ERRS = []
+class Srv(ThreadingHTTPServer):
+    def handle_error(s, req, addr): ERRS.append(sys.exc_info()[1])
+def cut_post(path, body, user="alice"):
+    srv = Srv(("127.0.0.1", 0), CutH); threading.Thread(target=srv.serve_forever, daemon=True).start()
+    err0, sys.stderr = sys.stderr, io.StringIO()
+    try:
+        r = urllib.request.Request(f"http://127.0.0.1:{srv.server_address[1]}{path}", json.dumps(body).encode(), {"Content-Type": "application/json", "X-Agent-User": user})
+        got = urllib.request.urlopen(r).read().decode()
+    finally:
+        cap, sys.stderr = sys.stderr.getvalue(), err0
+    srv.shutdown(); srv.server_close()
+    assert got.count("data: ") == 1 and not ERRS and "Traceback" not in cap and cap.count("연결 끊김") == 1, (got, ERRS, cap)
+    return got
+ANS = '{"sql": "SELECT 부서, COUNT(*) AS \\"n\\" FROM 연구과제 GROUP BY 부서", "explanation": "부서별 과제 수", "chart": {"type": "bar", "x": "부서", "y": "n"}}'
+def fake2(system, user, model, on_token=None, **kw):
+    for part in (ANS[:30], ANS[30:]):
+        on_token and on_token(part)
+    return ANS
+_ws, _ol = app.WS, app.ollama
+app.WS, app.ollama = tempfile.mkdtemp(prefix="sql-cut-"), fake2
+cut_post("/api/ask", {"question": "떠난 뒤 부서별 과제 수"})
+runs = app.list_runs(os.path.join(app.WS, "u", "alice"))
+assert len(runs) == 1 and runs[0]["question"] == "떠난 뒤 부서별 과제 수" and runs[0]["error"] is None and runs[0]["n"] > 0, runs
+__import__("shutil").rmtree(app.WS); app.WS, app.ollama = _ws, _ol
+
 # 저작권 표기: 서버가 화면에 붙이는 코드가 있어야 한다 (LICENSE·NOTICE)
 _src = open(__import__("os").path.join(__import__("os").path.dirname(__import__("os").path.abspath(__file__)), "app.py"), encoding="utf-8").read()
 assert "wqkgMjAyNiBnZ2dnODY1NyDCtyBkb25nanVraW0uZGV2QGdtYWlsLmNvbQ==" in _src and "signed(" in _src and "X-Author" in _src, "저작권 표기 누락"
