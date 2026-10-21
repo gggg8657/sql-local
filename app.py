@@ -396,9 +396,9 @@ def load_notes_by():
     return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
 
 
-def notes_locked(user):
-    """이 사용자가 고칠 수 없는 테이블 이름 목록 (다른 사람이 쓴 설명)."""
-    if user == "owner":
+def notes_locked(user, admin=False):
+    """이 사용자가 고칠 수 없는 테이블 이름 목록 (다른 사람이 쓴 설명). 관리자 = owner 또는 포털이 서명한 admin 역할(admin=True)"""
+    if user == "owner" or admin:
         return []
     by = load_notes_by()
     return sorted(t for t, n in load_notes().items() if n and by.get(t) != user)
@@ -407,7 +407,7 @@ def notes_locked(user):
 _notes_lock = threading.Lock()
 
 
-def save_notes(new, user):
+def save_notes(new, user, admin=False):
     """테이블 단위로 바뀐 것만 검사: 남이 쓴(또는 만든 사람 기록이 없는) 설명은 만든 사람·owner 만 고치거나 지움."""
     if not isinstance(new, dict) or not all(isinstance(v, dict) and all(isinstance(x, str) for x in v.values()) for v in new.values()):
         raise PermissionError((400, "형식: {테이블: {열: 설명}}"))
@@ -416,7 +416,7 @@ def save_notes(new, user):
         for t in set(old) | set(new):
             if (old.get(t) or {}) == (new.get(t) or {}):
                 continue
-            if old.get(t) and user != "owner" and by.get(t) != user:
+            if old.get(t) and user != "owner" and not admin and by.get(t) != user:
                 raise PermissionError((403, f"'{t}' 설명은 만든 사람이나 관리자만 고칠 수 있습니다"))
             if not new.get(t):
                 by.pop(t, None)
@@ -594,7 +594,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(models())
             if self.path == "/api/schema":
                 return self._send({"db": db_label(DB_URL), "demo": DEMO, "kind": db().kind, "tables": [{"name": t["name"], "cols": t["cols"], "fks": t["fks"]} for t in db().tables()],
-                                   "notes": load_notes(), "locked": notes_locked(agent_user(self))})
+                                   "notes": load_notes(), "locked": notes_locked(agent_user(self), portal_auth.is_admin(self))})
             if self.path == "/api/runs":
                 return self._send(list_runs(user_ws(self)))
             m = re.fullmatch(r"/api/runs/([\w-]+)(\.csv)?", self.path)
@@ -615,7 +615,7 @@ class H(BaseHTTPRequestHandler):
         try:
             if self.path == "/api/notes":
                 try:
-                    save_notes(self._json(), agent_user(self))
+                    save_notes(self._json(), agent_user(self), portal_auth.is_admin(self))
                 except PermissionError as e:
                     code, msg = e.args[0]
                     return self._send({"error": msg}, code=code)

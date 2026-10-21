@@ -84,6 +84,32 @@ app.save_notes({"인력": {"_": "사람"}, "장비": {"_": "기계"}}, "bob")  #
 assert app.notes_locked("bob") == ["인력"] and app.notes_locked("alice") == ["장비"] and app.notes_locked("owner") == []
 app.save_notes({"장비": {"_": "기계"}}, "owner")  # owner 는 지울 수 있음
 assert list(app.load_notes()) == ["장비"]
+# 관리자 계정 분리(포털 관문 그대로): 관리자 두 계정은 각자 u/<id>, 둘 다 남의 설명을 고침. 서명 없는/위장 역할은 권한 없음
+import threading, urllib.request, urllib.error
+from http.server import ThreadingHTTPServer
+os.environ["PORTAL_TOOL_KEY"] = "selftest-" + "k" * 40
+srv = ThreadingHTTPServer(("127.0.0.1", 0), app.portal_auth.install(app.H, "sql-local"))
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+def call(path, hd, body=None):
+    req = urllib.request.Request(f"http://127.0.0.1:{srv.server_address[1]}{path}", json.dumps(body).encode() if body is not None else None,
+                                 {**hd, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, None
+sig = lambda u, role=None: app.portal_auth.sign(u, "sql-local", role=role)
+assert call("/api/schema", sig("carol"))[1]["locked"] == ["장비"]
+assert call("/api/schema", {**sig("carol"), "X-Agent-Role": "admin"})[1]["locked"] == ["장비"], "서명 없는 역할은 권한 없음"
+forged = {**sig("carol"), "X-Agent-Role": "admin", "X-Agent-Role-Auth": sig("adm1", role="admin")["X-Agent-Role-Auth"]}
+assert call("/api/notes", forged, {"장비": {"_": "위장"}})[0] == 403, "남의 역할 서명을 옮겨 붙여도 못 고침"
+for u in ("adm1", "adm2"):
+    assert call("/api/schema", sig(u, role="admin"))[1]["locked"] == []
+    assert call("/api/notes", sig(u, role="admin"), {"장비": {"_": "관리자 " + u}}) == (200, {"ok": True}), "관리자 계정 둘 다 관리 권한"
+    assert call("/api/runs", sig(u, role="admin"))[0] == 200
+assert sorted(os.listdir(os.path.join(app.WS, "u"))) == ["adm1", "adm2"], "관리자 계정은 각자 작업 폴더(루트를 같이 쓰지 않음)"
+assert call("/api/schema", {"X-Agent-User": "adm1", "X-Agent-Role": "admin"})[0] == 401
+srv.shutdown(); os.environ.pop("PORTAL_TOOL_KEY")
 app.WS = _ws
 
 # 브라우저가 떠나도(첫 이벤트 뒤 쓰기가 BrokenPipeError) 질의는 끝까지 — 실행 기록에 남고 서버 오류·트레이스백 없음
